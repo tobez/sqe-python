@@ -1,0 +1,22 @@
+# Hidden files and directories, except those explicitly tracked below.
+# Note: any future dotfile that should be tracked needs its own ! entry here.
+.*
+!.gitignore
+!.github/
+!.changie.yaml
+!.changes/
+!.python-version
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+
+# Test / coverage
+htmlcov/
+coverage.xml
