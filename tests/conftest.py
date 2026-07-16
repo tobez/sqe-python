@@ -8,7 +8,7 @@ import pytest
 
 import sqe
 
-TRANSPORTS = ["sync"]  # "aio" joins in the async-client PR
+TRANSPORTS = ["sync", "aio"]
 
 
 @pytest.fixture(params=TRANSPORTS)
