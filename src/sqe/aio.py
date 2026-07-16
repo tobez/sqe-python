@@ -204,6 +204,9 @@ class AsyncClient:
                 f"connection to {self._host}:{self._port} timed out after "
                 f"{self._connect_timeout} seconds"
             ) from None
+        if self._closed:
+            writer.close()
+            return
         self._stream = reader
         self._attach(writer)
         self._reader_task = asyncio.get_running_loop().create_task(self._reader_main())

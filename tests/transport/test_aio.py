@@ -67,3 +67,30 @@ def test_async_context_manager_closes(server: FakeServer) -> None:
             await client.info()
 
     asyncio.run(main())
+
+
+def test_close_during_establish_does_not_leak_connection(
+    server: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_open_connection = asyncio.open_connection
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def gated_open_connection(*args, **kwargs):
+        started.set()
+        await gate.wait()
+        return await real_open_connection(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "open_connection", gated_open_connection)
+
+    async def main() -> None:
+        client = sqe.AsyncClient("127.0.0.1", server.port)
+        connect_task = asyncio.create_task(client.connect())
+        await started.wait()
+        await client.close()
+        gate.set()
+        await connect_task
+        assert client._writer is None
+        assert client._reader_task is None
+
+    asyncio.run(main())
