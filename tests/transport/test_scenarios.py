@@ -1,11 +1,13 @@
 # ABOUTME: Transport scenarios shared by the sync and asyncio clients via the
 # ABOUTME: parametrized make_client fixture, against the in-process FakeServer.
 import socket
+import time
 
 import pytest
 
 import sqe
 from sqe import protocol
+from tests.support import call_in_thread
 
 
 def test_get_returns_varbinds(server, make_client) -> None:
@@ -113,4 +115,58 @@ def test_per_call_timeout_and_late_reply_swallowed(server, make_client) -> None:
     req = held[0]
     server.send([req[0] | 0x10, req[1], [[req[4][0], b"late"]]])
     # a healthy follow-up call proves no ProtocolError/drop happened
+    assert client.info()["global"]["uptime"] == 1234
+
+
+def test_drop_fails_inflight_with_connection_lost(server, make_client) -> None:
+    server.handler = lambda req: None  # hold everything
+    client = make_client("127.0.0.1", server.port, reconnect_initial_delay=0.05)
+    thread, result = call_in_thread(client.get, "10.0.0.1", 161, ["1.3.1"])
+    server.wait_request_count(1)
+    server.drop_client()
+    thread.join(5)
+    assert isinstance(result["error"], sqe.ConnectionLost)
+
+
+def test_auto_reconnect_replays_setopts_before_traffic(server, make_client) -> None:
+    client = make_client("127.0.0.1", server.port, reconnect_initial_delay=0.05)
+    client.setopt("10.0.0.1", 161, {"community": "priv", "version": 2})
+    seen = len(server.requests)
+    server.drop_client()
+    server.wait_request_count(seen + 1)  # the replay arrives on the new link
+    replay = server.requests[seen]
+    assert replay[0] == protocol.SETOPT
+    assert replay[2:] == ["10.0.0.1", 161, {"community": "priv", "version": 2}]
+    assert client.info()["global"]["uptime"] == 1234
+    assert server.connections == 2
+
+
+def test_calls_block_while_daemon_down_then_complete(server, make_client) -> None:
+    client = make_client("127.0.0.1", server.port, reconnect_initial_delay=0.05)
+    assert client.info()["global"]["uptime"] == 1234
+    server.stop()
+    time.sleep(0.2)  # let the reader observe the drop
+    thread, result = call_in_thread(client.info)
+    time.sleep(0.3)
+    assert thread.is_alive()  # blocked, not failed
+    server.start()
+    thread.join(10)
+    assert result["value"]["global"]["uptime"] == 1234
+
+
+def test_blocked_call_times_out_while_daemon_down(server, make_client) -> None:
+    client = make_client("127.0.0.1", server.port, reconnect_initial_delay=0.05)
+    client.info()
+    server.stop()
+    time.sleep(0.2)
+    with pytest.raises(TimeoutError):
+        client.info(timeout=0.3)
+    server.start()  # leave the room tidy for teardown
+
+
+def test_garbage_from_daemon_is_connection_fatal_then_recovers(server, make_client) -> None:
+    client = make_client("127.0.0.1", server.port, reconnect_initial_delay=0.05)
+    assert client.info()["global"]["uptime"] == 1234
+    server.send(b"\xc1")  # invalid msgpack: ProtocolError inside
+    server.wait_connections(2)  # client treated it as a drop + reconnected
     assert client.info()["global"]["uptime"] == 1234

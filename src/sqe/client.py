@@ -182,8 +182,15 @@ class Client:
             if self._reader is None:
                 self._connect_locked()  # lazy first connect; errors propagate
                 return
-        # a reconnect is in progress; Task 12 waits here with the deadline
-        raise ConnectionLost("connection lost")
+        # a reconnect is in progress; wait for the reader thread to restore it
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if not self._connected.wait(remaining):
+            raise TimeoutError("daemon connection was not restored in time")
+        with self._lock:
+            if self._closed:
+                raise ConnectionLost("client is closed")
+            if self._broken:
+                raise ConnectionLost("connection lost; call connect() to retry")
 
     def _connect_locked(self) -> None:
         sock = socket.create_connection((self._host, self._port))
@@ -234,9 +241,31 @@ class Client:
             _close_quietly(sock)
             for response in self._conn.connection_lost():
                 self._dispatch_locked(response)
-            self._broken = True  # Task 12 turns this into the reconnect loop
-            self._reader = None
-            return None
+            if not self._reconnect:
+                self._broken = True
+                self._reader = None
+                return None
+        return self._reconnect_link()
+
+    def _reconnect_link(self) -> socket.socket | None:
+        delay = self._reconnect_initial_delay
+        while True:
+            with self._lock:
+                if self._closed:
+                    return None
+            try:
+                sock = socket.create_connection((self._host, self._port))
+            except OSError:
+                if self._wake.wait(delay):
+                    return None  # close() interrupted the backoff
+                delay = min(delay * 2, self._reconnect_max_delay)
+                continue
+            with self._lock:
+                if self._closed:
+                    _close_quietly(sock)
+                    return None
+                self._attach_locked(sock)
+            return sock
 
     def _dispatch_locked(self, response: protocol.Response) -> None:
         waiter = self._waiters.pop(response.request_id, None)
