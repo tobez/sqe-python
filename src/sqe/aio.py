@@ -94,9 +94,7 @@ class AsyncClient:
             await self._request(lambda c: c.send_setopt(host, port, opts), timeout),
         )
 
-    async def getopt(
-        self, host: str, port: int, *, timeout: float | None = None
-    ) -> dict[str, Any]:
+    async def getopt(self, host: str, port: int, *, timeout: float | None = None) -> dict[str, Any]:
         return cast(
             "dict[str, Any]",
             await self._request(lambda c: c.send_getopt(host, port), timeout),

@@ -248,9 +248,7 @@ class AioDriver:
         *,
         timeout: float | None = None,
     ) -> Any:
-        return self._run(
-            self._client.gettable(host, port, oid, max_repetitions, timeout=timeout)
-        )
+        return self._run(self._client.gettable(host, port, oid, max_repetitions, timeout=timeout))
 
     def dest_info(self, host: str, port: int, *, timeout: float | None = None) -> Any:
         return self._run(self._client.dest_info(host, port, timeout=timeout))

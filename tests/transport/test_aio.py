@@ -12,7 +12,7 @@ from tests.support import FakeServer, default_handler
 def test_concurrent_tasks_get_their_own_answers(server: FakeServer) -> None:
     def handler(req: list):
         if req[0] == protocol.GET:
-            return None                  # test replies manually, reordered
+            return None  # test replies manually, reordered
         return default_handler(req)
 
     server.handler = handler
@@ -23,7 +23,7 @@ def test_concurrent_tasks_get_their_own_answers(server: FakeServer) -> None:
             task_b = asyncio.create_task(client.get("10.0.0.1", 161, ["1.3.2"]))
             await asyncio.to_thread(server.wait_request_count, 2)
             gets = [r for r in server.requests if r[0] == protocol.GET]
-            for req in reversed(gets):   # answer in reverse order
+            for req in reversed(gets):  # answer in reverse order
                 server.send([req[0] | 0x10, req[1], [[req[4][0], req[4][0].encode()]]])
             result_a = await task_a
             result_b = await task_b
@@ -53,7 +53,7 @@ def test_cancelled_call_abandons_request(server: FakeServer) -> None:
                 await task
             req = held[0]
             server.send([req[0] | 0x10, req[1], [["1.3.1", b"late"]]])
-            info = await client.info()   # late reply swallowed; client healthy
+            info = await client.info()  # late reply swallowed; client healthy
             assert info["global"]["uptime"] == 1234
 
     asyncio.run(main())
