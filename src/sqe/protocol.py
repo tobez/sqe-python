@@ -199,6 +199,7 @@ class Connection:
         for key, value in payload.items():
             if not isinstance(key, (bytes, str)):
                 raise ProtocolError(f"non-string map key in reply: {key!r}")
+            # Values are scalars or nested maps; the daemon never nests maps inside lists.
             out[_text(key)] = self._decode_map(value) if isinstance(value, dict) else value
         return out
 
@@ -248,7 +249,7 @@ class Connection:
 
     def replay_requests(self) -> list[tuple[int, bytes]]:
         """Encode a SETOPT per cached destination, for replay after reconnect."""
-        out = []
+        out: list[tuple[int, bytes]] = []
         for (host, port), options in self._option_cache.items():
             if options:
                 out.append(self.send_setopt(host, port, options))
