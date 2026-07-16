@@ -92,3 +92,25 @@ def test_drop_without_reconnect_breaks_until_connect(server, make_client) -> Non
     assert server.requests[seen][0] == protocol.SETOPT
     assert server.requests[seen][2:] == ["10.0.0.1", 161, {"community": "s"}]
     assert client.info()["global"]["uptime"] == 1234
+
+
+def test_per_call_timeout_and_late_reply_swallowed(server, make_client) -> None:
+    held: list[list] = []
+
+    def handler(req: list):
+        if req[0] == protocol.GET:
+            held.append(req)
+            return None  # never answer GETs (for now)
+        from tests.support import default_handler
+
+        return default_handler(req)
+
+    server.handler = handler
+    client = make_client("127.0.0.1", server.port)
+    with pytest.raises(TimeoutError):
+        client.get("10.0.0.1", 161, ["1.3.6.1.2.1.1.5.0"], timeout=0.2)
+    # push the late reply for the abandoned request: must be swallowed
+    req = held[0]
+    server.send([req[0] | 0x10, req[1], [[req[4][0], b"late"]]])
+    # a healthy follow-up call proves no ProtocolError/drop happened
+    assert client.info()["global"]["uptime"] == 1234

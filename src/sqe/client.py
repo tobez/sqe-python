@@ -159,7 +159,12 @@ class Client:
                 except OSError:
                     pass  # the reader observes the drop and fails this waiter
             break
-        waiter.event.wait()
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if not waiter.event.wait(remaining):
+            with self._lock:
+                self._conn.abandon(request_id)
+                self._waiters.pop(request_id, None)
+            raise TimeoutError(f"no response from daemon within {timeout} seconds")
         response = waiter.response
         assert response is not None
         if response.error is not None:
