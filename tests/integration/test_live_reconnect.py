@@ -19,6 +19,7 @@ def test_restart_midflight_fails_inflight_with_connection_lost(
     time.sleep(0.3)  # the GET is registered and on the wire
     daemon.restart()
     thread.join(10)
+    assert not thread.is_alive()
     assert isinstance(result["error"], sqe.ConnectionLost)
 
 

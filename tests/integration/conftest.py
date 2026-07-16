@@ -79,6 +79,8 @@ class SqeDaemon:
                     pass
             except OSError:
                 if time.monotonic() > deadline:
+                    stop_child(self.proc)
+                    self.proc = None
                     raise RuntimeError(
                         "daemon never started listening; log:\n" + self.log_path.read_text()
                     ) from None
@@ -139,6 +141,15 @@ def snmpsim_agent(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[st
             ],
             stdout=log,
             stderr=subprocess.STDOUT,
+        )
+    # No port probe here: `target` already does end-to-end readiness. This
+    # is just a cheap check that the child didn't die immediately (e.g. a
+    # bad CLI arg), so that failure is reported directly instead of as an
+    # indirect 30s "snmpsim never answered" from `target`.
+    time.sleep(0.2)
+    if proc.poll() is not None:
+        raise RuntimeError(
+            f"snmpsim exited with {proc.returncode} during startup; log:\n" + log_path.read_text()
         )
     yield ("127.0.0.1", port)
     stop_child(proc)
