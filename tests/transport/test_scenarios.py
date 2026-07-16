@@ -7,7 +7,7 @@ import pytest
 
 import sqe
 from sqe import protocol
-from tests.support import call_in_thread
+from tests.support import call_in_thread, pack_reply
 
 
 def test_get_returns_varbinds(server, make_client) -> None:
@@ -170,3 +170,24 @@ def test_garbage_from_daemon_is_connection_fatal_then_recovers(server, make_clie
     server.send(b"\xc1")  # invalid msgpack: ProtocolError inside
     server.wait_connections(2)  # client treated it as a drop + reconnected
     assert client.info()["global"]["uptime"] == 1234
+
+
+def test_reply_before_garbage_in_one_batch_still_dispatches_then_recovers(
+    server, make_client
+) -> None:
+    server.handler = lambda req: None  # hold the GET so we can answer it ourselves
+    client = make_client("127.0.0.1", server.port, reconnect_initial_delay=0.05)
+    thread, result = call_in_thread(client.get, "10.0.0.1", 161, ["1.3.6.1.2.1.1.5.0"])
+    server.wait_request_count(1)
+    req = server.requests[0]
+    reply = [req[0] | 0x10, req[1], [[req[4][0], b"fake.example.net"]]]
+    # one write: a decodable reply immediately followed by a malformed frame
+    server.send(pack_reply(reply) + b"\xc1")
+    thread.join(5)
+    # the in-flight caller got its value, not ConnectionLost from the trailing garbage
+    assert result["value"] == [sqe.VarBind("1.3.6.1.2.1.1.5.0", value=b"fake.example.net")]
+    server.wait_connections(2)  # the malformed frame still killed the connection
+    from tests.support import default_handler
+
+    server.handler = default_handler
+    assert client.info()["global"]["uptime"] == 1234  # recovers on the new link
