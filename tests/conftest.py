@@ -26,5 +26,12 @@ def make_client(request: pytest.FixtureRequest) -> Any:
         return client
 
     yield factory
+    first_error: Exception | None = None
     for client in created:
-        client.close()
+        try:
+            client.close()
+        except Exception as exc:  # noqa: BLE001 — teardown must reach every client
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
