@@ -9,7 +9,7 @@ from typing import Any
 
 import msgpack
 
-from .errors import ProtocolError, RequestError, SqeError
+from .errors import ConnectionLost, ProtocolError, RequestError, SqeError
 
 SETOPT = 1
 GETOPT = 2
@@ -228,3 +228,33 @@ class Connection:
             for name in _V3_OPTIONS:
                 cache.pop(name, None)
         cache.update(pending.options)
+
+    def connection_lost(self) -> list[Response]:
+        """The transport lost the TCP connection.
+
+        Every pending request drains as a ConnectionLost-carrying response
+        for the transport to dispatch. Tombstones and any partially received
+        frame are discarded; the option cache survives (it is per-client
+        state, not per-TCP-connection state).
+        """
+        drained = [
+            Response(request_id, error=ConnectionLost("connection to daemon lost"))
+            for request_id in self._pending
+        ]
+        self._pending.clear()
+        self._tombstones.clear()
+        self._unpacker = msgpack.Unpacker()
+        return drained
+
+    def replay_requests(self) -> list[tuple[int, bytes]]:
+        """Encode a SETOPT per cached destination, for replay after reconnect."""
+        out = []
+        for (host, port), options in self._option_cache.items():
+            if options:
+                out.append(self.send_setopt(host, port, options))
+        return out
+
+    def abandon(self, request_id: int) -> None:
+        """Forget a pending request; its eventual response is dropped silently."""
+        if self._pending.pop(request_id, None) is not None:
+            self._tombstones.add(request_id)
