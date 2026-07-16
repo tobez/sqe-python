@@ -5,6 +5,7 @@
 !.github/
 !.changie.yaml
 !.changes/
+!.changes/unreleased/.gitkeep
 !.python-version
 
 # Python
