@@ -2,6 +2,7 @@
 # ABOUTME: Re-exports the clients, VarBind, and the exception hierarchy.
 """Python client library for the snmp-query-engine daemon."""
 
+from .aio import AsyncClient
 from .client import Client
 from .errors import ConnectionLost, ProtocolError, RequestError, SqeError
 from .protocol import VarBind
@@ -9,6 +10,7 @@ from .protocol import VarBind
 __version__ = "0.0.0"
 
 __all__ = [
+    "AsyncClient",
     "Client",
     "ConnectionLost",
     "ProtocolError",

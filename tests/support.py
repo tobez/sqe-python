@@ -2,6 +2,7 @@
 # ABOUTME: msgpack bin), an in-process fake daemon, and thread-call helpers.
 from __future__ import annotations
 
+import asyncio
 import socket
 import threading
 import time
@@ -197,3 +198,75 @@ def call_in_thread(
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     return thread, result
+
+
+class AioDriver:
+    """Drives an AsyncClient from a background event loop so the shared
+    scenario tests can call it with the sync surface."""
+
+    def __init__(self, host: str, port: int, **kwargs: Any) -> None:
+        import sqe
+
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+        self._client = sqe.AsyncClient(host, port, **kwargs)
+        self._driver_closed = False
+
+    def _run(self, coro: Any) -> Any:
+        # Once the driver's own loop has stopped, the client itself is
+        # already closed, so every remaining call fails fast with no real
+        # awaiting; run it on a throwaway loop instead of the dead one.
+        if self._driver_closed:
+            return asyncio.run(coro)
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(30)
+
+    @property
+    def _reader(self) -> Any:
+        """The reader task, under the sync client's attribute name — some
+        scenario tests inspect this to check reconnect-in-progress state."""
+        return self._client._reader_task
+
+    def setopt(self, host: str, port: int, options: dict, *, timeout: float | None = None) -> Any:
+        return self._run(self._client.setopt(host, port, options, timeout=timeout))
+
+    def getopt(self, host: str, port: int, *, timeout: float | None = None) -> Any:
+        return self._run(self._client.getopt(host, port, timeout=timeout))
+
+    def info(self, *, timeout: float | None = None) -> Any:
+        return self._run(self._client.info(timeout=timeout))
+
+    def get(self, host: str, port: int, oids: list, *, timeout: float | None = None) -> Any:
+        return self._run(self._client.get(host, port, oids, timeout=timeout))
+
+    def gettable(
+        self,
+        host: str,
+        port: int,
+        oid: str,
+        max_repetitions: int | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        return self._run(
+            self._client.gettable(host, port, oid, max_repetitions, timeout=timeout)
+        )
+
+    def dest_info(self, host: str, port: int, *, timeout: float | None = None) -> Any:
+        return self._run(self._client.dest_info(host, port, timeout=timeout))
+
+    def connect(self) -> None:
+        self._run(self._client.connect())
+
+    def close(self) -> None:
+        # Idempotent like the client itself: the loop is stopped and joined
+        # only once, so a repeat close() does not schedule a coroutine on a
+        # loop that already stopped running it.
+        if self._driver_closed:
+            return
+        try:
+            self._run(self._client.close())
+        finally:
+            self._driver_closed = True
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=5)
