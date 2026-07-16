@@ -9,7 +9,7 @@ from typing import Any
 
 import msgpack
 
-from .errors import SqeError
+from .errors import ProtocolError, RequestError, SqeError
 
 SETOPT = 1
 GETOPT = 2
@@ -61,6 +61,16 @@ _V3_OPTIONS = frozenset(
         "privkul",
     }
 )
+
+
+def _text(value: bytes | str) -> str:
+    """Decode bytes to string, mirroring daemon's bin-everything strategy."""
+    if isinstance(value, str):
+        return value
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProtocolError(f"undecodable string from daemon: {value!r}") from exc
 
 
 @dataclass
@@ -122,3 +132,99 @@ class Connection:
 
     def send_dest_info(self, host: str, port: int) -> tuple[int, bytes]:
         return self._send(_Pending(DEST_INFO, host, port), [host, port])
+
+    def feed(self, data: bytes) -> None:
+        """Give the connection bytes read from the wire."""
+        self._unpacker.feed(data)
+
+    def next_response(self) -> Response | None:
+        """Return the next decoded response, or None if more bytes are needed.
+
+        Call repeatedly after each feed(): one feed can complete zero or
+        more responses. Raises ProtocolError on anything malformed;
+        transports must treat that as connection-fatal.
+        """
+        while True:
+            try:
+                obj = self._unpacker.unpack()
+            except msgpack.exceptions.OutOfData:
+                return None
+            except (msgpack.exceptions.UnpackException, ValueError) as exc:
+                raise ProtocolError(f"malformed msgpack from daemon: {exc}") from exc
+            response = self._handle(obj)
+            if response is not None:
+                return response
+
+    def _handle(self, obj: Any) -> Response | None:
+        """Process a decoded msgpack object, returning a Response or None if skipped."""
+        if not isinstance(obj, list) or len(obj) < 2:
+            raise ProtocolError(f"response is not a well-formed array: {obj!r}")
+        rtype, request_id = obj[0], obj[1]
+        if not isinstance(rtype, int) or not isinstance(request_id, int):
+            raise ProtocolError(f"response type/id are not integers: {obj!r}")
+        if request_id in self._tombstones:
+            self._tombstones.discard(request_id)
+            return None
+        pending = self._pending.get(request_id)
+        if pending is None:
+            raise ProtocolError(f"response for unknown request id {request_id}")
+        if rtype == pending.rtype | _REPLY_ERROR:
+            del self._pending[request_id]
+            if len(obj) != 3 or not isinstance(obj[2], (bytes, str)):
+                raise ProtocolError(f"malformed error reply: {obj!r}")
+            return Response(request_id, error=RequestError(_text(obj[2])))
+        if rtype != pending.rtype | _REPLY_OK:
+            raise ProtocolError(
+                f"reply type 0x{rtype:x} does not match request type {pending.rtype}"
+            )
+        del self._pending[request_id]
+        if len(obj) != 3:
+            raise ProtocolError(f"success reply is not a 3-element array: {obj!r}")
+        value = self._decode_payload(pending.rtype, obj[2])
+        if pending.rtype == SETOPT:
+            self._cache_setopt(pending)
+        return Response(request_id, value=value)
+
+    def _decode_payload(self, rtype: int, payload: Any) -> Any:
+        """Decode a payload based on response type."""
+        if rtype in (GET, GETTABLE):
+            return self._decode_varbinds(payload)
+        return self._decode_map(payload)
+
+    def _decode_map(self, payload: Any) -> dict[str, Any]:
+        """Decode a map, normalizing all keys to strings recursively."""
+        if not isinstance(payload, dict):
+            raise ProtocolError(f"reply payload is not a map: {payload!r}")
+        out: dict[str, Any] = {}
+        for key, value in payload.items():
+            if not isinstance(key, (bytes, str)):
+                raise ProtocolError(f"non-string map key in reply: {key!r}")
+            out[_text(key)] = self._decode_map(value) if isinstance(value, dict) else value
+        return out
+
+    def _decode_varbinds(self, payload: Any) -> list[VarBind]:
+        """Decode a list of OID/value pairs (GET/GETTABLE result)."""
+        if not isinstance(payload, list):
+            raise ProtocolError(f"oid reply payload is not an array: {payload!r}")
+        out: list[VarBind] = []
+        for row in payload:
+            if not isinstance(row, list) or len(row) != 2 or not isinstance(row[0], (bytes, str)):
+                raise ProtocolError(f"malformed varbind row: {row!r}")
+            oid, value = _text(row[0]), row[1]
+            if isinstance(value, list):
+                if len(value) != 1 or not isinstance(value[0], (bytes, str)):
+                    raise ProtocolError(f"malformed per-oid error for {oid}: {value!r}")
+                out.append(VarBind(oid, error=_text(value[0])))
+            else:
+                out.append(VarBind(oid, value=value))
+        return out
+
+    def _cache_setopt(self, pending: _Pending) -> None:
+        """Cache SETOPT options for this host/port pair."""
+        assert pending.host is not None and pending.port is not None
+        assert pending.options is not None
+        cache = self._option_cache.setdefault((pending.host, pending.port), {})
+        if _V3_OPTIONS & pending.options.keys():
+            for name in _V3_OPTIONS:
+                cache.pop(name, None)
+        cache.update(pending.options)
