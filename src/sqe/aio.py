@@ -150,6 +150,9 @@ class AsyncClient:
             request_id, data = encode(self._conn)
             future: asyncio.Future[protocol.Response] = loop.create_future()
             self._futures[request_id] = future
+            # No drain(): requests are small and the daemon reads promptly,
+            # so relying on StreamWriter's own buffering keeps writes off the
+            # per-call deadline.
             self._writer.write(data)
             break
         try:

@@ -268,3 +268,4 @@ class AioDriver:
             self._driver_closed = True
             self._loop.call_soon_threadsafe(self._loop.stop)
             self._thread.join(timeout=5)
+            self._loop.close()
