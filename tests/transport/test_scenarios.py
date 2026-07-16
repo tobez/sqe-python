@@ -164,6 +164,19 @@ def test_blocked_call_times_out_while_daemon_down(server, make_client) -> None:
     server.start()  # leave the room tidy for teardown
 
 
+def test_connect_is_noop_during_reconnect_backoff(server, make_client) -> None:
+    client = make_client("127.0.0.1", server.port, reconnect_initial_delay=0.05)
+    assert client.info()["global"]["uptime"] == 1234
+    server.stop()
+    time.sleep(0.2)  # let the reader observe the drop and enter backoff
+    reader_before = client._reader
+    assert reader_before is not None
+    client.connect()  # a reconnect is already in flight: must be a no-op
+    assert client._reader is reader_before
+    server.start()
+    assert client.info()["global"]["uptime"] == 1234
+
+
 def test_garbage_from_daemon_is_connection_fatal_then_recovers(server, make_client) -> None:
     client = make_client("127.0.0.1", server.port, reconnect_initial_delay=0.05)
     assert client.info()["global"]["uptime"] == 1234

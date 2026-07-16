@@ -45,13 +45,16 @@ class Client:
         reconnect: bool = True,
         reconnect_initial_delay: float = 0.1,
         reconnect_max_delay: float = 5.0,
+        connect_timeout: float = 5.0,
     ) -> None:
         self._host = host
         self._port = port
         self._reconnect = reconnect
         self._reconnect_initial_delay = reconnect_initial_delay
         self._reconnect_max_delay = reconnect_max_delay
+        self._connect_timeout = connect_timeout
         self._lock = threading.Lock()
+        self._send_lock = threading.Lock()
         self._conn = protocol.Connection()
         self._sock: socket.socket | None = None
         self._reader: threading.Thread | None = None
@@ -75,7 +78,7 @@ class Client:
             if self._closed:
                 raise ConnectionLost("client is closed")
             self._broken = False
-            if self._sock is None:
+            if self._sock is None and self._reader is None:
                 self._connect_locked()
 
     def close(self) -> None:
@@ -154,10 +157,12 @@ class Client:
                     continue  # link dropped between checks; wait again
                 request_id, data = encode(self._conn)
                 self._waiters[request_id] = waiter
-                try:
-                    self._sock.sendall(data)
-                except OSError:
-                    pass  # the reader observes the drop and fails this waiter
+                sock = self._sock
+            try:
+                with self._send_lock:
+                    sock.sendall(data)
+            except OSError:
+                pass  # the reader observes the drop and fails this waiter
             break
         remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
         if not waiter.event.wait(remaining):
@@ -193,7 +198,8 @@ class Client:
                 raise ConnectionLost("connection lost; call connect() to retry")
 
     def _connect_locked(self) -> None:
-        sock = socket.create_connection((self._host, self._port))
+        sock = socket.create_connection((self._host, self._port), timeout=self._connect_timeout)
+        sock.settimeout(None)
         self._attach_locked(sock)
         self._reader = threading.Thread(target=self._reader_main, args=(sock,), daemon=True)
         self._reader.start()
@@ -201,12 +207,17 @@ class Client:
     def _attach_locked(self, sock: socket.socket) -> None:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._sock = sock
-        for _request_id, data in self._conn.replay_requests():
-            try:
-                sock.sendall(data)
-            except OSError:
-                break  # the reader observes the drop
+        self._send_payloads(sock, self._conn.replay_requests())
         self._connected.set()
+
+    def _send_payloads(self, sock: socket.socket, payloads: list[tuple[int, bytes]]) -> None:
+        """Send pre-encoded payloads, serialized against concurrent senders."""
+        with self._send_lock:
+            for _request_id, data in payloads:
+                try:
+                    sock.sendall(data)
+                except OSError:
+                    break  # the reader observes the drop
 
     def _reader_main(self, sock: socket.socket) -> None:
         while True:
@@ -254,7 +265,10 @@ class Client:
                 if self._closed:
                     return None
             try:
-                sock = socket.create_connection((self._host, self._port))
+                sock = socket.create_connection(
+                    (self._host, self._port), timeout=self._connect_timeout
+                )
+                sock.settimeout(None)
             except OSError:
                 if self._wake.wait(delay):
                     return None  # close() interrupted the backoff
@@ -264,7 +278,17 @@ class Client:
                 if self._closed:
                     _close_quietly(sock)
                     return None
-                self._attach_locked(sock)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                payloads = self._conn.replay_requests()
+            # send outside self._lock: a full send buffer must not block the
+            # reader (or any other caller) out of the lock while replaying
+            self._send_payloads(sock, payloads)
+            with self._lock:
+                if self._closed:
+                    _close_quietly(sock)
+                    return None
+                self._sock = sock
+                self._connected.set()
             return sock
 
     def _dispatch_locked(self, response: protocol.Response) -> None:
