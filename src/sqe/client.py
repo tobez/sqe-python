@@ -207,6 +207,8 @@ class Client:
     def _attach_locked(self, sock: socket.socket) -> None:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._sock = sock
+        # Safe under _lock: the reader for this socket starts only after we return,
+        # so no concurrent reader can starve waiting for the lock while this send happens.
         self._send_payloads(sock, self._conn.replay_requests())
         self._connected.set()
 
