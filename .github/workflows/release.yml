@@ -1,0 +1,20 @@
+# ABOUTME: Release workflow: on v* tag push, builds sdist+wheel and publishes
+# ABOUTME: to PyPI via trusted publishing (OIDC).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+      - name: Build distributions
+        run: uv build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

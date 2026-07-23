@@ -46,6 +46,9 @@ dev = [
     "snmpsim>=1.2.2",
 ]
 
+[tool.uv]
+exclude-newer = "7 days"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
