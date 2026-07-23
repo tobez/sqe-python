@@ -7,7 +7,7 @@ from .client import Client
 from .errors import ConnectionLost, ProtocolError, RequestError, SqeError
 from .protocol import VarBind
 
-__version__ = "0.0.0"
+__version__ = "0.1.0"
 
 __all__ = [
     "AsyncClient",
